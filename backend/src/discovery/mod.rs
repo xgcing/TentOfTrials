@@ -1,4 +1,4 @@
-use crate::config::DiscoveryConfig;
+use crate::config::{DiscoveryConfig, ServiceConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -35,14 +35,16 @@ pub trait DiscoveryBackend: Send + Sync {
 #[allow(dead_code)]
 pub struct ServiceDiscovery {
     config: DiscoveryConfig,
+    service: ServiceConfig,
     instances: Arc<RwLock<HashMap<String, ServiceInstance>>>,
     backend: Arc<RwLock<Option<Box<dyn DiscoveryBackend>>>>,
 }
 
 impl ServiceDiscovery {
-    pub fn new(config: DiscoveryConfig) -> Self {
+    pub fn new(config: DiscoveryConfig, service: ServiceConfig) -> Self {
         Self {
             config,
+            service,
             instances: Arc::new(RwLock::new(HashMap::new())),
             backend: Arc::new(RwLock::new(None)),
         }
@@ -53,13 +55,14 @@ impl ServiceDiscovery {
         let instance = ServiceInstance {
             id: node_id.to_string(),
             name: self.config.namespace.clone(),
-            address: "0.0.0.0".into(),
-            port: 8080,
+            address: self.service.host.clone(),
+            port: self.service.port,
             tags: self.config.tags.clone(),
             meta: HashMap::from([
                 ("version".into(), env!("CARGO_PKG_VERSION").into()),
                 ("runtime".into(), "rust".into()),
                 ("protocol".into(), "grpc".into()),
+                ("service".into(), self.service.name.clone()),
             ]),
             status: HealthStatus::Healthy,
         };

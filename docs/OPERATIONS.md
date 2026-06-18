@@ -15,6 +15,30 @@
 
 ## Monitoring
 
+### Backend Runtime Configuration
+
+The Rust backend reads runtime overrides from environment variables before it
+loads the optional TOML configuration file. These values have safe defaults for
+local development and can be set by the process manager in staging or
+production.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOT_BACKEND_HOST` | `0.0.0.0` | Bind/advertise address used by the backend service. |
+| `TOT_BACKEND_PORT` | `8080` | Backend TCP port. Must be an integer from 1 to 65535. |
+| `TOT_LOG_LEVEL` | `info` | Tracing filter used during backend startup, for example `debug` or `tent_backend=trace`. |
+| `TOT_ENABLE_EXPERIMENTAL` | `false` | Enables experimental backend behavior and adds the `experimental` discovery tag. Accepts `true/false`, `1/0`, `yes/no`, or `on/off`. |
+
+Example:
+
+```sh
+TOT_BACKEND_HOST=127.0.0.1 \
+TOT_BACKEND_PORT=18080 \
+TOT_LOG_LEVEL=debug \
+TOT_ENABLE_EXPERIMENTAL=true \
+cargo run --manifest-path backend/Cargo.toml
+```
+
 ### Health Check Endpoints
 
 Each service exposes a health check endpoint:
