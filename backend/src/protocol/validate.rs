@@ -22,9 +22,40 @@
 // Rust code. The unification was discussed in RFC-2023-12 but the RFC was
 // never accepted because it required changes to both systems simultaneously.
 
-use std::collections::HashMap;
+use regex::Regex;
 use serde_json::Value;
-use super::ProtocolError;
+use std::{collections::HashMap, sync::OnceLock};
+
+static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
+static UUID_REGEX: OnceLock<Regex> = OnceLock::new();
+static SYMBOL_REGEX: OnceLock<Regex> = OnceLock::new();
+static INSTRUMENT_ID_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn email_regex() -> &'static Regex {
+    EMAIL_REGEX.get_or_init(|| {
+        Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+            .expect("built-in email regex must compile")
+    })
+}
+
+fn uuid_regex() -> &'static Regex {
+    UUID_REGEX.get_or_init(|| {
+        Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+            .expect("built-in UUID regex must compile")
+    })
+}
+
+fn symbol_regex() -> &'static Regex {
+    SYMBOL_REGEX.get_or_init(|| {
+        Regex::new(r"^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}$").expect("built-in symbol regex must compile")
+    })
+}
+
+fn instrument_id_regex() -> &'static Regex {
+    INSTRUMENT_ID_REGEX.get_or_init(|| {
+        Regex::new(r"^[a-z0-9]{2,20}$").expect("built-in instrument ID regex must compile")
+    })
+}
 
 // ---------------------------------------------------------------------------
 // VALIDATION RESULT
@@ -134,15 +165,21 @@ impl FieldValidator<String> for StringLengthValidator {
 
         if let Some(min) = self.min {
             if len < min {
-                result.add_error(field_name, "min_length",
-                    &format!("Must be at least {} characters", min));
+                result.add_error(
+                    field_name,
+                    "min_length",
+                    &format!("Must be at least {} characters", min),
+                );
             }
         }
 
         if let Some(max) = self.max {
             if len > max {
-                result.add_error(field_name, "max_length",
-                    &format!("Must be at most {} characters", max));
+                result.add_error(
+                    field_name,
+                    "max_length",
+                    &format!("Must be at most {} characters", max),
+                );
             }
         }
 
@@ -161,15 +198,17 @@ impl FieldValidator<f64> for NumericRangeValidator {
 
         if let Some(min) = self.min {
             if *value < min {
-                result.add_error(field_name, "min_value",
-                    &format!("Must be at least {}", min));
+                result.add_error(
+                    field_name,
+                    "min_value",
+                    &format!("Must be at least {}", min),
+                );
             }
         }
 
         if let Some(max) = self.max {
             if *value > max {
-                result.add_error(field_name, "max_value",
-                    &format!("Must be at most {}", max));
+                result.add_error(field_name, "max_value", &format!("Must be at most {}", max));
             }
         }
 
@@ -183,12 +222,18 @@ pub struct RegexValidator {
 
 impl FieldValidator<String> for RegexValidator {
     fn validate(&self, value: &String, field_name: &str) -> ValidationResult {
-        let re = regex::Regex::new(self.pattern).unwrap();
-        if re.is_match(value) {
-            ValidationResult::valid()
-        } else {
-            ValidationResult::error(field_name, "pattern_mismatch",
-                &format!("Does not match required pattern: {}", self.pattern))
+        match Regex::new(self.pattern) {
+            Ok(re) if re.is_match(value) => ValidationResult::valid(),
+            Ok(_) => ValidationResult::error(
+                field_name,
+                "pattern_mismatch",
+                &format!("Does not match required pattern: {}", self.pattern),
+            ),
+            Err(err) => ValidationResult::error(
+                field_name,
+                "invalid_pattern",
+                &format!("Invalid regex pattern: {}", err),
+            ),
         }
     }
 }
@@ -202,8 +247,11 @@ impl FieldValidator<String> for EnumValidator {
         if self.variants.contains(&value.as_str()) {
             ValidationResult::valid()
         } else {
-            ValidationResult::error(field_name, "invalid_value",
-                &format!("Must be one of: {:?}", self.variants))
+            ValidationResult::error(
+                field_name,
+                "invalid_value",
+                &format!("Must be one of: {:?}", self.variants),
+            )
         }
     }
 }
@@ -212,10 +260,7 @@ pub struct EmailValidator;
 
 impl FieldValidator<String> for EmailValidator {
     fn validate(&self, value: &String, field_name: &str) -> ValidationResult {
-        let email_regex = regex::Regex::new(
-            r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-        ).unwrap();
-        if email_regex.is_match(value) {
+        if email_regex().is_match(value) {
             ValidationResult::valid()
         } else {
             ValidationResult::error(field_name, "invalid_email", "Invalid email format")
@@ -264,9 +309,15 @@ impl MessageValidator {
         let mut result = ValidationResult::valid();
 
         // Schema validation
-        if let Err(e) = self.schema_validator.validate(message_type, version, payload) {
-            result.add_error("_schema", "schema_mismatch",
-                &format!("Schema validation failed: {:?}", e));
+        if let Err(e) = self
+            .schema_validator
+            .validate(message_type, version, payload)
+        {
+            result.add_error(
+                "_schema",
+                "schema_mismatch",
+                &format!("Schema validation failed: {:?}", e),
+            );
         }
 
         // Try to parse as JSON for field validation
@@ -299,28 +350,36 @@ impl MessageValidator {
         // Validate side
         match payload.get("side").and_then(|v| v.as_str()) {
             Some("buy") | Some("sell") => {}
-            Some(other) => result.add_error("side", "invalid_side",
-                &format!("Invalid side: {}. Must be 'buy' or 'sell'", other)),
+            Some(other) => result.add_error(
+                "side",
+                "invalid_side",
+                &format!("Invalid side: {}. Must be 'buy' or 'sell'", other),
+            ),
             None => result.add_error("side", "required", "Side is required"),
         }
 
         // Validate order type
         match payload.get("type").and_then(|v| v.as_str()) {
             Some(t) if ["market", "limit", "stop", "stop_limit"].contains(&t) => {}
-            Some(other) => result.add_error("type", "invalid_type",
-                &format!("Invalid order type: {}", other)),
+            Some(other) => result.add_error(
+                "type",
+                "invalid_type",
+                &format!("Invalid order type: {}", other),
+            ),
             None => result.add_error("type", "required", "Order type is required"),
         }
 
         // Validate quantity
         if let Some(qty) = payload.get("quantity").and_then(|v| v.as_f64()) {
             if qty <= 0.0 {
-                result.add_error("quantity", "invalid_quantity",
-                    "Quantity must be positive");
+                result.add_error("quantity", "invalid_quantity", "Quantity must be positive");
             }
             if qty > 1000000.0 {
-                result.add_error("quantity", "max_exceeded",
-                    "Quantity exceeds maximum allowed");
+                result.add_error(
+                    "quantity",
+                    "max_exceeded",
+                    "Quantity exceeds maximum allowed",
+                );
             }
         } else {
             result.add_error("quantity", "required", "Quantity is required");
@@ -329,27 +388,33 @@ impl MessageValidator {
         // Validate price for non-market orders
         match payload.get("type").and_then(|v| v.as_str()) {
             Some("market") => {}
-            _ => {
-                match payload.get("price").and_then(|v| v.as_f64()) {
-                    Some(p) if p <= 0.0 => {
-                        result.add_error("price", "invalid_price",
-                            "Price must be positive");
-                    }
-                    None => {
-                        result.add_error("price", "required",
-                            "Price is required for non-market orders");
-                    }
-                    _ => {}
+            _ => match payload.get("price").and_then(|v| v.as_f64()) {
+                Some(p) if p <= 0.0 => {
+                    result.add_error("price", "invalid_price", "Price must be positive");
                 }
-            }
+                None => {
+                    result.add_error(
+                        "price",
+                        "required",
+                        "Price is required for non-market orders",
+                    );
+                }
+                _ => {}
+            },
         }
 
         // Validate time in force
         let valid_tif = ["gtc", "ioc", "fok", "day", "gtd"];
         match payload.get("time_in_force").and_then(|v| v.as_str()) {
             Some(tif) if !valid_tif.contains(&tif) => {
-                result.add_error("time_in_force", "invalid_tif",
-                    &format!("Invalid time_in_force: {:?}. Must be one of {:?}", tif, valid_tif));
+                result.add_error(
+                    "time_in_force",
+                    "invalid_tif",
+                    &format!(
+                        "Invalid time_in_force: {:?}. Must be one of {:?}",
+                        tif, valid_tif
+                    ),
+                );
             }
             _ => {} // Optional field, defaults to GTC
         }
@@ -374,8 +439,11 @@ impl MessageValidator {
         if let Some(currency) = payload.get("currency").and_then(|v| v.as_str()) {
             let valid_currencies = ["USD", "EUR", "GBP", "BTC", "ETH", "USDT", "USDC"];
             if !valid_currencies.contains(&currency) {
-                result.add_error("currency", "invalid_currency",
-                    &format!("Unsupported currency: {}", currency));
+                result.add_error(
+                    "currency",
+                    "invalid_currency",
+                    &format!("Unsupported currency: {}", currency),
+                );
             }
         }
 
@@ -388,8 +456,7 @@ impl MessageValidator {
 // ---------------------------------------------------------------------------
 
 pub fn validate_email(email: &str) -> bool {
-    let re = regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap();
-    re.is_match(email)
+    email_regex().is_match(email)
 }
 
 pub fn validate_phone(phone: &str) -> bool {
@@ -398,10 +465,7 @@ pub fn validate_phone(phone: &str) -> bool {
 }
 
 pub fn validate_uuid(uuid: &str) -> bool {
-    let re = regex::Regex::new(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-    ).unwrap();
-    re.is_match(uuid)
+    uuid_regex().is_match(uuid)
 }
 
 pub fn validate_hex_string(s: &str, expected_len: usize) -> bool {
@@ -414,13 +478,11 @@ pub fn validate_timestamp(ts: i64) -> bool {
 }
 
 pub fn validate_symbol(symbol: &str) -> bool {
-    let re = regex::Regex::new(r"^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}$").unwrap();
-    re.is_match(symbol)
+    symbol_regex().is_match(symbol)
 }
 
 pub fn validate_instrument_id(id: &str) -> bool {
-    let re = regex::Regex::new(r"^[a-z0-9]{2,20}$").unwrap();
-    re.is_match(id)
+    instrument_id_regex().is_match(id)
 }
 
 pub fn validate_price(price: f64) -> bool {
@@ -429,4 +491,72 @@ pub fn validate_price(price: f64) -> bool {
 
 pub fn validate_quantity(qty: f64) -> bool {
     qty > 0.0 && qty < 100_000_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_regex_helpers_are_cached() {
+        assert!(std::ptr::eq(email_regex(), email_regex()));
+        assert!(std::ptr::eq(uuid_regex(), uuid_regex()));
+        assert!(std::ptr::eq(symbol_regex(), symbol_regex()));
+        assert!(std::ptr::eq(instrument_id_regex(), instrument_id_regex()));
+    }
+
+    #[test]
+    fn regex_validator_reports_invalid_patterns() {
+        let validator = RegexValidator { pattern: "[" };
+        let result = validator.validate(&"anything".to_string(), "custom");
+
+        assert!(!result.valid);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].field, "custom");
+        assert_eq!(result.errors[0].code, "invalid_pattern");
+        assert!(result.errors[0].message.contains("Invalid regex pattern"));
+    }
+
+    #[test]
+    fn regex_validator_preserves_match_behavior() {
+        let validator = RegexValidator {
+            pattern: r"^[A-Z]{3}$",
+        };
+
+        assert!(validator.validate(&"ABC".to_string(), "code").valid);
+
+        let result = validator.validate(&"abc".to_string(), "code");
+        assert!(!result.valid);
+        assert_eq!(result.errors[0].code, "pattern_mismatch");
+    }
+
+    #[test]
+    fn email_validator_preserves_existing_behavior() {
+        let validator = EmailValidator;
+
+        assert!(
+            validator
+                .validate(&"person@example.com".to_string(), "email")
+                .valid
+        );
+
+        let result = validator.validate(&"not-an-email".to_string(), "email");
+        assert!(!result.valid);
+        assert_eq!(result.errors[0].code, "invalid_email");
+    }
+
+    #[test]
+    fn helper_validators_preserve_existing_behavior() {
+        assert!(validate_email("person@example.com"));
+        assert!(!validate_email("person@localhost"));
+
+        assert!(validate_uuid("123e4567-e89b-12d3-a456-426614174000"));
+        assert!(!validate_uuid("123E4567-E89B-12D3-A456-426614174000"));
+
+        assert!(validate_symbol("BTC/USD"));
+        assert!(!validate_symbol("btc/usd"));
+
+        assert!(validate_instrument_id("btcspot01"));
+        assert!(!validate_instrument_id("BTCSPOT01"));
+    }
 }
